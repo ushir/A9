@@ -156,6 +156,83 @@ def Test_tomcat (ssh, inst, ip_address):
         print("Connection to Tomcat failed, for instance " + str(ip_address)) 
     
 #------
+
+def Test_myapp (ssh, inst, ip_address, my_app_name):
+
+    instid = inst['InstanceId']
+
+    print("testing MyApp, connecting to http://" + str(ip_address) + ":8080/" + my_app_name)
+    tries = 1
+    maxtries = 5
+    urlloop = True
+    while(urlloop):
+        try:       
+            urloutput = urllib.request.urlopen(
+                            "http://"+ip_address+":8080/"+my_app_name).read()
+            urlloop = False
+        except:
+            print(str(instid) + " " + str(tries)  + ' urlopen attempted')
+            time.sleep(10)
+            tries += 1
+            if tries == maxtries:
+                print('ERROR: hit maxtries:' + str(maxtries) 
+                    + ' urlopen ' + "http://" +ip_address + ":8080/" + my_app_name)
+                raise
+                 
+    print("Successful connection to http://" + str(ip_address) +":8080/" + my_app_name)
+    print ("urloutput:" + urloutput.decode())
+
+
+#------
+# Install My static  application
+def Install_myapp(ssh, dns_name, ip_address, key_path, my_app_name, my_app_file):
+
+    print("Installing app " + my_app_name + " at "  + str(ip_address))
+
+    if os.path.exists(my_app_file) == False:
+        print('cannot find App ' + my_app_file)
+        print('current folder is:' + os.getcwd())
+        exit(1)
+
+    # Copy app from current directory to instance
+    try:
+        sftp = ssh.open_sftp()
+        sftp.put(my_app_file, my_app_file)
+        sftp.close()
+    except:
+        print('error copying app from local diretory to instance')
+
+    # Copy app from local directory to Tomcat directory
+    tomcat_path = "/usr/share/tomcat8/webapps"
+    tomcat_apppath = "/usr/share/tomcat8/webapps/ROOT"
+    tomcat_web_xml = "/usr/share/tomcat8/conf/web.xml"
+    my_app_path = tomcat_path + "/" + my_app_name
+    mkdir_command = "sudo mkdir " + my_app_path
+    cp_command = "sudo cp " + my_app_file + " " + my_app_path + "/."
+    # cp_command_1 = "sudo cp " + my_app_file + " " + my_app_path + "/index.html"
+    cp_command_2 = "sudo cp " + my_app_file + " " + tomcat_apppath + "/."
+    sed_command_1 = "sudo sed -i -e '1,/index.html/{s/index/MyPage/}' " + tomcat_web_xml
+
+    print('Copying app to tomcat install using command ' + cp_command)
+    stdin, stdout, stderr = ssh.exec_command(mkdir_command)
+    stdin, stdout, stderr = ssh.exec_command(cp_command)
+    # stdin, stdout, stderr = ssh.exec_command(cp_command_1)
+    stdin, stdout, stderr = ssh.exec_command(cp_command_2)
+    stdin, stdout, stderr = ssh.exec_command(sed_command_1)
+    stdin.flush()
+    # Need to restart tomcat due to installation on new index.html and modification to web.xml
+    stdin, stdout, stderr = ssh.exec_command("sudo service tomcat8 restart")
+    stdin.flush()
+    data = stdout.read().splitlines()
+    #data is binary so convert to a string
+    if 'OK' in data[-1].decode():
+        print('tomcat restart successful on ' + str(ip_address))
+    else:
+        print('could NOT restart tomcat on ' + str(ip_address))
+        return
+   
+   
+#------
 def Close_ssh(ssh, ip_address):
     print('closing ssh connection to ', str(ip_address))
     ssh.close()
@@ -196,6 +273,8 @@ def main():
 
     region = 'us-west-1'
     ami_west_id = 'ami-0ec6517f6edbf8044'
+    my_app_name = "MyWebApp"
+    my_app_file = "MyPage.html"
     ec2=boto3.client('ec2',region_name=region)
     inst1 = Manipulate_instance.Launch_instance(
                                 amiid=ami_west_id,
@@ -206,8 +285,11 @@ def main():
     ssh_inst1 = Openssh (inst1, dns_name, ip_addr, key_path)
     Start_tomcat (ssh_inst1, ip_addr)
     Test_tomcat (ssh_inst1, inst1, ip_addr)
+    Install_myapp(ssh_inst1, dns_name, ip_addr, key_path, my_app_name, my_app_file)
+    Test_myapp (ssh_inst1, inst1, ip_addr, my_app_name)
     Close_ssh (ssh_inst1, ip_addr)
     
+    print('Now testing the same installation on us-east-1')
     region = 'us-east-1'
     # securitygroup = "awsclass01" needs to be in us-east-1
     securitykey = "awskp4-east"
@@ -219,11 +301,13 @@ def main():
                                 security_group_name=securitygroup, 
                                 keypair_name=securitykey,
                                 region=region)
-    dns_name, ip_addr = Get_dns_ip_info (ec2_east, inst2)
-    ssh_inst2 = Openssh (inst2, dns_name, ip_addr, key_path)
-    Start_tomcat (ssh_inst2, ip_addr)
-    Test_tomcat (ssh_inst2, inst2, ip_addr)
-    Close_ssh (ssh_inst2, ip_addr)
+    dns_name2, ip_addr2 = Get_dns_ip_info (ec2_east, inst2)
+    ssh_inst2 = Openssh (inst2, dns_name2, ip_addr2, key_path)
+    Start_tomcat (ssh_inst2, ip_addr2)
+    Test_tomcat (ssh_inst2, inst2, ip_addr2)
+    Install_myapp(ssh_inst2, dns_name2, ip_addr2, key_path, my_app_name, my_app_file)
+    Test_myapp (ssh_inst2, inst2, ip_addr2, my_app_name)
+    Close_ssh (ssh_inst2, ip_addr2)
 
     Manipulate_instance.Terminate_instance (ec2, inst1)
     Manipulate_instance.Terminate_instance (ec2_east, inst2)
